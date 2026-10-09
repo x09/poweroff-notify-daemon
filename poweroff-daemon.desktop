@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Poweroff Notify Daemon
+Name[ru]=Демон уведомлений о выключении
+Comment=Shows countdown timer and notifications before scheduled PC shutdown
+Comment[ru]=Показывает таймер и уведомления перед запланированным выключением ПК
+Exec=/usr/bin/poweroff-daemon.py
+Icon=poweroff-daemon
+Terminal=false
+Categories=System;
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel
+StartupNotify=false

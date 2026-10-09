@@ -1,0 +1,7 @@
+[Unit]
+Description=Scheduled poweroff (fallback)
+Documentation=file:///usr/share/doc/poweroff-daemon/README.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl poweroff

@@ -1,0 +1,13 @@
+[Unit]
+Description=Scheduled poweroff timer (fallback)
+Documentation=file:///usr/share/doc/poweroff-daemon/README.md
+
+[Timer]
+# Время будет настроено администратором в /etc/systemd/system/poweroff-schedule.timer.d/override.conf
+# или через: systemctl edit poweroff-schedule.timer
+# Пример: OnCalendar=18:00
+OnCalendar=
+Persistent=false
+
+[Install]
+WantedBy=timers.target
