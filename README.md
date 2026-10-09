@@ -2,6 +2,13 @@
 
 Демон для Linux (ALT Linux, KDE/MATE/GNOME) с индикацией в системном трее оставшегося времени до выключения ПК.
 
+<img width="1270" height="771" alt="1_2026-10-09_10-56" src="https://github.com/user-attachments/assets/0b49638c-1b44-4815-8bd6-5a253dd365d8" />
+
+<img width="1282" height="772" alt="2_2026-10-09_10-56" src="https://github.com/user-attachments/assets/935551d8-b74a-4361-a77a-921d8e8833be" />
+
+<img width="1276" height="775" alt="3_2026-10-09_10-56" src="https://github.com/user-attachments/assets/4352d680-8ebe-4cd6-9f4a-1511b2589464" />
+
+
 ## Возможности
 
 - **Индикатор в трее** с иконкой будильника на проводе
