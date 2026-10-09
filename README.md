@@ -32,7 +32,7 @@
 ```bash
 apt-get install python3 python3-module-pygobject3 \
                 libayatana-appindicator3-gir \
-                libnotify-gir typelib-Gtk-3.0 polkit
+                libnotify-gir polkit
 ```
 
 ### Зависимости Python
