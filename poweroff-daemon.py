@@ -121,19 +121,27 @@ class PoweroffDaemon:
         return "system-shutdown"
 
     def get_user_groups(self):
-        """Получает список групп пользователя через getent"""
+        """Получает список групп пользователя (имена и GID) через id -Gn и id -G"""
         try:
             import subprocess
-            result = subprocess.run(['groups', self.username],
-                                  capture_output=True, text=True, timeout=5)
-            if result.returncode == 0:
-                # Формат вывода: "username : group1 group2 group3"
-                groups_line = result.stdout.strip()
-                if ':' in groups_line:
-                    groups_str = groups_line.split(':', 1)[1].strip()
-                    groups = groups_str.split()
-                    logger.info(f"Пользователь {self.username} состоит в группах: {groups}")
-                    return groups
+            # Получаем имена групп
+            result_names = subprocess.run(['id', '-Gn', self.username],
+                                         capture_output=True, text=True, timeout=5)
+            # Получаем GID групп
+            result_gids = subprocess.run(['id', '-G', self.username],
+                                        capture_output=True, text=True, timeout=5)
+
+            if result_names.returncode == 0 and result_gids.returncode == 0:
+                # Имена групп (могут быть с пробелами, поэтому разбиваются некорректно)
+                groups_names = result_names.stdout.strip().split()
+                # GID групп (числа, всегда корректно разделены)
+                groups_gids = result_gids.stdout.strip().split()
+
+                # Объединяем: возвращаем и имена, и GID (GID как строки)
+                groups = groups_names + groups_gids
+                logger.info(f"Пользователь {self.username} состоит в группах: {groups_names}")
+                logger.info(f"GID групп: {groups_gids}")
+                return groups
             return []
         except Exception as e:
             logger.warning(f"Не удалось получить группы пользователя: {e}")

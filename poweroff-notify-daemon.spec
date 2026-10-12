@@ -11,7 +11,7 @@ Url: https://github.com/x09/poweroff-notify-daemon
 
 Packager: Anton Shevtsov <shevtsov.anton@gmail.com>
 
-Source: %name-%version.tgz
+Source: %name-%version.tar
 
 BuildArch: noarch
 
@@ -88,8 +88,6 @@ install -Dm644 OVERVIEW.md %buildroot%_docdir/%name/OVERVIEW.md
 install -Dm644 LICENSE %buildroot%_docdir/%name/LICENSE
 
 %post
-# Обновляем кэш иконок
-gtk-update-icon-cache %_iconsdir/hicolor &>/dev/null ||:
 
 # Информируем администратора о необходимости настройки
 cat <<EOF
@@ -116,8 +114,6 @@ if [ $1 -eq 0 ]; then
 fi
 
 %postun
-# Обновляем кэш иконок после удаления
-gtk-update-icon-cache %_iconsdir/hicolor &>/dev/null ||:
 
 %files
 %doc %_docdir/%name/README.md
@@ -165,15 +161,20 @@ gtk-update-icon-cache %_iconsdir/hicolor &>/dev/null ||:
 - Implemented GUI daemon with AyatanaAppIndicator3 support
 - Added XDG autostart for automatic launch on user login
 - Added optional system timer for fallback shutdown
-- INI-based configuration with per-user section support
+- INI-based configuration with flexible rule system:
+  * [default] — base settings
+  * [group:name] — domain group rules (override default)
+  * [user:name] — personal settings (override group and default)
+- Priority-based configuration merging (default < group < user)
 - Compatible with GNOME 48+, KDE, MATE
-- Case-insensitive username matching
+- Case-insensitive username and group name matching
 - Custom project icons (SVG + multiple PNG sizes)
 - Dual-level protection against user disabling
-- Support for 'shutdown_time = none' to disable shutdown for specific users
-- Inactive menu items when shutdown is disabled
+- Support for 'shutdown_time = none' to disable shutdown for specific users/groups
 - Dynamic tray icons (normal blue / warning red)
 - Days of week support for scheduled shutdown
+- CRITICAL FIX: Changed group detection from 'groups' to 'id -Gn'
+  for proper domain user support (Samba AD)
 - CRITICAL FIX: Persistent=false in timer to prevent immediate shutdown on enable
-- Domain group support [group:name] with priority rules (default < group < user)
 - Enhanced sync-timer.py with proper OnCalendar generation for weekdays
+
