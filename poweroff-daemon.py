@@ -120,8 +120,27 @@ class PoweroffDaemon:
             logger.info(f"Иконка изменена на: {new_state}")
         return "system-shutdown"
 
+    def get_user_groups(self):
+        """Получает список групп пользователя через getent"""
+        try:
+            import subprocess
+            result = subprocess.run(['groups', self.username],
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                # Формат вывода: "username : group1 group2 group3"
+                groups_line = result.stdout.strip()
+                if ':' in groups_line:
+                    groups_str = groups_line.split(':', 1)[1].strip()
+                    groups = groups_str.split()
+                    logger.info(f"Пользователь {self.username} состоит в группах: {groups}")
+                    return groups
+            return []
+        except Exception as e:
+            logger.warning(f"Не удалось получить группы пользователя: {e}")
+            return []
+
     def load_config(self):
-        """Загрузка конфигурации из /etc/poweroff.time"""
+        """Загрузка конфигурации из /etc/poweroff.time с поддержкой групп"""
         if not os.path.exists(self.CONFIG_PATH):
             logger.error(f"Конфигурационный файл {self.CONFIG_PATH} не найден")
             self.show_error_notification("Конфиг не найден",
@@ -132,7 +151,7 @@ class PoweroffDaemon:
             config = configparser.ConfigParser()
             config.read(self.CONFIG_PATH, encoding='utf-8')
 
-            # Загружаем дефолтные значения
+            # Загружаем дефолтные значения (приоритет 1)
             defaults = config['default'] if 'default' in config else {}
 
             # Проверяем что в default нет 'none'
@@ -140,27 +159,43 @@ class PoweroffDaemon:
             if default_shutdown_time.lower() == 'none':
                 logger.error("shutdown_time = none не допускается в секции [default]")
                 self.show_error_notification("Ошибка конфига",
-                                            "shutdown_time = none допускается только в пользовательских секциях")
+                                            "shutdown_time = none допускается только в [user:*] и [group:*]")
                 return False
 
-            # Ищем пользовательскую секцию [user:username]
+            # Получаем группы пользователя
+            user_groups = self.get_user_groups()
+
+            # Применяем правила для групп (приоритет 2)
+            # Если пользователь состоит в нескольких группах с правилами, применяется первая найденная
+            group_config = {}
+            for section in config.sections():
+                if section.startswith('group:'):
+                    group_name = section[6:].strip().lower()  # после 'group:'
+                    # Проверяем что пользователь состоит в этой группе (case-insensitive)
+                    if any(g.lower() == group_name for g in user_groups):
+                        group_config = dict(config[section])
+                        logger.info(f"Применены правила группы [{section}]")
+                        break  # Используем первую найденную группу
+
+            # Ищем пользовательскую секцию [user:username] (приоритет 3)
             user_section = f'user:{self.username}'
             user_config = config[user_section] if user_section in config else {}
 
-            # Получаем параметры с fallback на default
-            shutdown_time_str = user_config.get('shutdown_time',
-                                               defaults.get('shutdown_time', '18:00'))
-            self.extend_minutes = int(user_config.get('extend_minutes',
-                                                     defaults.get('extend_minutes', 30)))
-            self.warn_minutes = int(user_config.get('warn_minutes',
-                                                   defaults.get('warn_minutes', 10)))
-            self.reload_minutes = int(user_config.get('reload_minutes',
-                                                     defaults.get('reload_minutes', 15)))
-            self.interactive = user_config.get('interactive',
-                                              defaults.get('interactive', 'true')).lower() == 'true'
+            # Применяем приоритеты: default < group < user
+            # Сначала берём из defaults, затем переопределяем из group, затем из user
+            merged_config = dict(defaults)
+            merged_config.update(group_config)
+            merged_config.update(user_config)
+
+            # Получаем параметры из объединённой конфигурации
+            shutdown_time_str = merged_config.get('shutdown_time', '18:00')
+            self.extend_minutes = int(merged_config.get('extend_minutes', 30))
+            self.warn_minutes = int(merged_config.get('warn_minutes', 10))
+            self.reload_minutes = int(merged_config.get('reload_minutes', 15))
+            self.interactive = merged_config.get('interactive', 'true').lower() == 'true'
 
             # Парсим дни недели
-            days_str = user_config.get('days', defaults.get('days', '1,2,3,4,5,6,7'))
+            days_str = merged_config.get('days', '1,2,3,4,5,6,7')
             self.active_days = self.parse_days(days_str)
 
             # Проверяем на 'none' (отключение выключения для пользователя)

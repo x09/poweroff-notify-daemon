@@ -29,6 +29,29 @@ sudo nano /etc/poweroff.time
 - **Уровень 1:** XDG autostart (запускается при входе каждого пользователя)
 - **Уровень 2:** System timer от root (пользователь не может отключить)
 
+## Управление через GPO/Samba AD
+
+Конфигурация поддерживает три уровня правил с приоритетами:
+
+1. **[default]** — базовые настройки для всех пользователей
+2. **[group:имягруппы]** — правила для доменных групп (переопределяют `[default]`)
+3. **[user:username]** — персональные настройки (переопределяют `[group:*]` и `[default]`)
+
+Пример:
+```ini
+[default]
+shutdown_time = 18:00
+
+[group:developers]
+shutdown_time = 20:00
+
+[group:admins]
+shutdown_time = none  # Отключить для группы
+
+[user:ivanov.aa]
+shutdown_time = 19:00  # Персональное переопределение
+```
+
 ## Технологии
 
 - Python 3
