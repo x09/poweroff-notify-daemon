@@ -1,5 +1,5 @@
 Name: poweroff-notify-daemon
-Version: 1.0.0
+Version: 1.0.1
 Release: alt1
 
 Summary: Daemon for scheduled PC shutdown with GUI notifications
@@ -71,9 +71,11 @@ install -Dm644 poweroff-daemon.desktop %buildroot%_sysconfdir/xdg/autostart/powe
 
 # Иконки
 install -Dm644 icons/poweroff-daemon.svg %buildroot%_iconsdir/hicolor/scalable/apps/poweroff-daemon.svg
+install -Dm644 icons/poweroff-daemon-warning.svg %buildroot%_iconsdir/hicolor/scalable/apps/poweroff-daemon-warning.svg
 
 for i in 16 24 32 48 64 128 256; do
 install -Dm644 icons/poweroff-daemon-${i}.png %buildroot%_iconsdir/hicolor/${i}x${i}/apps/poweroff-daemon.png
+install -Dm644 icons/poweroff-daemon-warning-${i}.png %buildroot%_iconsdir/hicolor/${i}x${i}/apps/poweroff-daemon-warning.png
 done
 
 # Symlink для pixmaps (для старых приложений)
@@ -136,16 +138,28 @@ gtk-update-icon-cache %_iconsdir/hicolor &>/dev/null ||:
 
 # Иконки
 %_iconsdir/hicolor/scalable/apps/poweroff-daemon.svg
+%_iconsdir/hicolor/scalable/apps/poweroff-daemon-warning.svg
 %_iconsdir/hicolor/16x16/apps/poweroff-daemon.png
+%_iconsdir/hicolor/16x16/apps/poweroff-daemon-warning.png
 %_iconsdir/hicolor/24x24/apps/poweroff-daemon.png
+%_iconsdir/hicolor/24x24/apps/poweroff-daemon-warning.png
 %_iconsdir/hicolor/32x32/apps/poweroff-daemon.png
+%_iconsdir/hicolor/32x32/apps/poweroff-daemon-warning.png
 %_iconsdir/hicolor/48x48/apps/poweroff-daemon.png
+%_iconsdir/hicolor/48x48/apps/poweroff-daemon-warning.png
 %_iconsdir/hicolor/64x64/apps/poweroff-daemon.png
+%_iconsdir/hicolor/64x64/apps/poweroff-daemon-warning.png
 %_iconsdir/hicolor/128x128/apps/poweroff-daemon.png
+%_iconsdir/hicolor/128x128/apps/poweroff-daemon-warning.png
 %_iconsdir/hicolor/256x256/apps/poweroff-daemon.png
+%_iconsdir/hicolor/256x256/apps/poweroff-daemon-warning.png
 %_pixmapsdir/poweroff-daemon.png
 
 %changelog
+* Mon Oct 12 2026 Anton Shevtsov <shevtsov.anton@gmail.com> 1.0.1-alt1
+- Fix wrong icons
+- Add GROUP support
+
 * Thu Oct 08 2026 Anton Shevtsov <shevtsov.anton@gmail.com> 1.0.0-alt1
 - Initial release
 - Implemented GUI daemon with AyatanaAppIndicator3 support
@@ -158,3 +172,8 @@ gtk-update-icon-cache %_iconsdir/hicolor &>/dev/null ||:
 - Dual-level protection against user disabling
 - Support for 'shutdown_time = none' to disable shutdown for specific users
 - Inactive menu items when shutdown is disabled
+- Dynamic tray icons (normal blue / warning red)
+- Days of week support for scheduled shutdown
+- CRITICAL FIX: Persistent=false in timer to prevent immediate shutdown on enable
+- Domain group support [group:name] with priority rules (default < group < user)
+- Enhanced sync-timer.py with proper OnCalendar generation for weekdays
