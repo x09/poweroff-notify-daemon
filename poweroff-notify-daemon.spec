@@ -155,7 +155,8 @@ fi
 * Mon Oct 12 2026 Anton Shevtsov <shevtsov.anton@gmail.com> 1.0.1-alt1
 - Fix wrong icons
 - Add GROUP support
-
+ * [group:name] — domain group rules (override default)
+ 
 * Thu Oct 08 2026 Anton Shevtsov <shevtsov.anton@gmail.com> 1.0.0-alt1
 - Initial release
 - Implemented GUI daemon with AyatanaAppIndicator3 support
@@ -163,8 +164,7 @@ fi
 - Added optional system timer for fallback shutdown
 - INI-based configuration with flexible rule system:
   * [default] — base settings
-  * [group:name] — domain group rules (override default)
-  * [user:name] — personal settings (override group and default)
+  * [user:name] — personal settings (override default)
 - Priority-based configuration merging (default < group < user)
 - Compatible with GNOME 48+, KDE, MATE
 - Case-insensitive username and group name matching
