@@ -53,6 +53,10 @@ class PoweroffDaemon:
 
     def __init__(self):
         self.config = {}
+        self.shutdown_timer_id = None
+        self.pending_shutdown = None
+        self.final_notification = None
+        self.warning_notification = None
         self.shutdown_time = None
         self.extend_minutes = 30
         self.warn_minutes = 10
@@ -82,8 +86,8 @@ class PoweroffDaemon:
         self.indicator.set_menu(self.build_menu())
 
         # Таймер обновления трея
-        # Обычно раз в минуту, но переключаемся на каждую секунду в последнюю минуту
-        self.update_timer_id = GLib.timeout_add_seconds(60, self.update_indicator)
+        # Единый секундный таймер также обновляет финальный отсчёт.
+        self.update_timer_id = GLib.timeout_add_seconds(1, self.update_indicator)
 
         # Таймер перезагрузки конфига
         self.reload_timer_id = GLib.timeout_add_seconds(self.reload_minutes * 60, self.reload_config_timer)
@@ -156,19 +160,17 @@ class PoweroffDaemon:
             return False
 
         try:
-            config = configparser.ConfigParser()
-            config.read(self.CONFIG_PATH, encoding='utf-8')
-
-            # Загружаем дефолтные значения (приоритет 1)
-            defaults = config['default'] if 'default' in config else {}
-
-            # Проверяем что в default нет 'none'
-            default_shutdown_time = defaults.get('shutdown_time', '18:00')
-            if default_shutdown_time.lower() == 'none':
-                logger.error("shutdown_time = none не допускается в секции [default]")
-                self.show_error_notification("Ошибка конфига",
-                                            "shutdown_time = none допускается только в [user:*] и [group:*]")
-                return False
+            config = configparser.ConfigParser(
+                interpolation=None, inline_comment_prefixes=('#', ';'))
+            with open(self.CONFIG_PATH, encoding='utf-8') as stream:
+                config.read_file(stream)
+            if 'default' not in config:
+                raise ValueError("Отсутствует секция [default]")
+            # Проверяем весь файл до изменения рабочего состояния.
+            self.validate_config_values('DEFAULT', config.defaults())
+            for section in config.sections():
+                self.validate_config_values(section, dict(config[section]))
+            defaults = config['default']
 
             # Получаем группы пользователя
             user_groups = self.get_user_groups()
@@ -195,26 +197,43 @@ class PoweroffDaemon:
             merged_config.update(group_config)
             merged_config.update(user_config)
 
-            # Получаем параметры из объединённой конфигурации
-            shutdown_time_str = merged_config.get('shutdown_time', '18:00')
-            self.extend_minutes = int(merged_config.get('extend_minutes', 30))
-            self.warn_minutes = int(merged_config.get('warn_minutes', 10))
-            self.reload_minutes = int(merged_config.get('reload_minutes', 15))
-            self.interactive = merged_config.get('interactive', 'true').lower() == 'true'
+            settings = {
+                'shutdown_time': '18:00', 'days': [1, 2, 3, 4, 5, 6, 7],
+                'extend_minutes': 30, 'warn_minutes': 10,
+                'reload_minutes': 15, 'interactive': True,
+            }
+            settings.update(self.validate_config_values('effective', merged_config))
+            old_config = self.config
+            schedule_changed = not old_config or any(
+                settings[key] != old_config[key] for key in ('shutdown_time', 'days'))
+            # Вычисляем новое расписание до применения любых параметров.
+            new_shutdown = self.shutdown_time
+            if schedule_changed:
+                new_shutdown = (None if settings['shutdown_time'] == 'none' else
+                                self.parse_shutdown_time(settings['shutdown_time'], settings['days']))
 
-            # Парсим дни недели
-            days_str = merged_config.get('days', '1,2,3,4,5,6,7')
-            self.active_days = self.parse_days(days_str)
-
-            # Проверяем на 'none' (отключение выключения для пользователя)
-            if shutdown_time_str.lower() == 'none':
-                self.shutdown_time = None
-                logger.info(f"Выключение отключено для пользователя {self.username}")
-            else:
-                # Парсим время выключения
-                self.shutdown_time = self.parse_shutdown_time(shutdown_time_str)
-
-            self.warned = False  # Сбрасываем флаг предупреждения при перезагрузке
+            self.config = settings
+            self.extend_minutes = settings['extend_minutes']
+            self.warn_minutes = settings['warn_minutes']
+            self.reload_minutes = settings['reload_minutes']
+            self.interactive = settings['interactive']
+            self.active_days = settings['days']
+            if schedule_changed:
+                self.close_warning_notification()
+                self.cancel_pending_shutdown()
+                self.shutdown_time = new_shutdown
+                self.warned = False
+                if old_config:
+                    message = ('Автоматическое выключение отключено' if new_shutdown is None else
+                               f"Новое выключение: {new_shutdown:%d.%m %H:%M}. "
+                               "Прежнее продление отменено.")
+                    try:
+                        Notify.Notification.new('Расписание изменено', message,
+                                                'dialog-information').show()
+                    except Exception:
+                        logger.exception('Не удалось показать изменение расписания')
+            elif old_config.get('warn_minutes') != self.warn_minutes:
+                self.warned = False
 
             logger.info(f"Конфигурация загружена: shutdown_time={self.shutdown_time}, "
                        f"extend={self.extend_minutes}m, warn={self.warn_minutes}m, "
@@ -227,39 +246,50 @@ class PoweroffDaemon:
             self.show_error_notification("Ошибка конфига", str(e))
             return False
 
+    def validate_config_values(self, section, values):
+        """Проверяет значения секции, возвращает отдельный словарь без побочных эффектов."""
+        result = {}
+        for key, raw in values.items():
+            value = raw.strip()
+            try:
+                if key == 'shutdown_time':
+                    if value.lower() == 'none':
+                        if section != 'effective' and not section.startswith(('group:', 'user:')):
+                            raise ValueError('none разрешён только в [group:*] и [user:*]')
+                        result[key] = 'none'
+                    else:
+                        if (len(value) != 5 or value[2] != ':' or
+                                not (value[:2] + value[3:]).isascii() or
+                                not (value[:2] + value[3:]).isdigit()):
+                            raise ValueError('ожидается время HH:MM')
+                        result[key] = datetime.strptime(value, '%H:%M').strftime('%H:%M')
+                elif key == 'days':
+                    result[key] = self.parse_days(value)
+                elif key in ('extend_minutes', 'warn_minutes', 'reload_minutes'):
+                    number = int(value)
+                    minimum = 0 if key == 'warn_minutes' else 1
+                    if number < minimum:
+                        raise ValueError(f'значение должно быть не меньше {minimum}')
+                    if key == 'reload_minutes' and number * 60 > 2**32 - 1:
+                        raise ValueError('интервал слишком велик для GLib')
+                    if key == 'extend_minutes':
+                        # Проверяем, что интервал представим как дата, а не только как int.
+                        datetime.now() + timedelta(minutes=number)
+                    result[key] = number
+                elif key == 'interactive':
+                    if value.lower() not in configparser.ConfigParser.BOOLEAN_STATES:
+                        raise ValueError('ожидается true/false, yes/no, on/off или 1/0')
+                    result[key] = configparser.ConfigParser.BOOLEAN_STATES[value.lower()]
+            except (ValueError, OverflowError) as error:
+                raise ValueError(f'[{section}] {key} = {raw!r}: {error}') from error
+        return result
+
     def parse_days(self, days_str):
-        """Парсинг списка дней недели из строки '1,2,3,4,5'"""
-        try:
-            days = [int(d.strip()) for d in days_str.split(',')]
-            # Проверяем что все значения в диапазоне 1-7
-            valid_days = [d for d in days if 1 <= d <= 7]
-            if not valid_days:
-                logger.warning(f"Неверный формат дней '{days_str}', используются все дни")
-                return [1, 2, 3, 4, 5, 6, 7]
-            logger.info(f"Активные дни недели: {valid_days}")
-            return sorted(valid_days)
-        except Exception as e:
-            logger.error(f"Ошибка парсинга дней '{days_str}': {e}")
-            return [1, 2, 3, 4, 5, 6, 7]
-
-    def find_next_active_shutdown(self):
-        """Находит следующую дату/время выключения с учётом активных дней"""
-        now = datetime.now()
-        # Берём время из текущего shutdown_time
-        shutdown_time = self.shutdown_time.time()
-
-        # Начинаем с завтрашнего дня
-        next_dt = datetime.combine(now.date() + timedelta(days=1), shutdown_time)
-
-        # Ищем следующий активный день (максимум 7 дней)
-        for _ in range(7):
-            if next_dt.isoweekday() in self.active_days:
-                logger.info(f"Следующее выключение: {next_dt}")
-                return next_dt
-            next_dt += timedelta(days=1)
-
-        # Если не нашли (все дни отключены), возвращаем через неделю
-        return datetime.combine(now.date() + timedelta(days=7), shutdown_time)
+        """Непустой список дней 1–7; ошибочные значения не заменяются всеми днями."""
+        days = [int(day.strip()) for day in days_str.split(',')]
+        if not days or any(day < 1 or day > 7 for day in days):
+            raise ValueError('ожидается непустой список дней от 1 до 7')
+        return sorted(set(days))
 
     def get_weekday_name(self, weekday):
         """Возвращает название дня недели (1=Пн, 7=Вс)"""
@@ -274,39 +304,19 @@ class PoweroffDaemon:
         }
         return names.get(weekday, '?')
 
-    def parse_shutdown_time(self, time_str):
-        """Парсинг времени выключения из строки HH:MM с учётом активных дней недели"""
-        try:
-            t = datetime.strptime(time_str.strip(), '%H:%M').time()
-            now = datetime.now()
-            shutdown_dt = datetime.combine(now.date(), t)
-
-            # Если время уже прошло сегодня, берём завтра
-            # Используем < вместо <= чтобы текущая минута считалась "не прошедшей"
-            if shutdown_dt < now:
-                shutdown_dt += timedelta(days=1)
-                logger.info(f"Время {time_str} уже прошло сегодня, ищем следующий активный день")
-
-            # Находим следующий активный день недели
-            # weekday() возвращает 0=Monday, 6=Sunday, нам нужно 1=Monday, 7=Sunday
-            max_attempts = 7  # Максимум 7 дней проверяем
-            for _ in range(max_attempts):
-                current_weekday = shutdown_dt.isoweekday()  # 1=Monday, 7=Sunday
-                if current_weekday in self.active_days:
-                    logger.info(f"Время выключения: {shutdown_dt} (день недели {current_weekday})")
-                    return shutdown_dt
-                else:
-                    logger.info(f"День {current_weekday} не активен, пропускаем")
-                    shutdown_dt += timedelta(days=1)
-
-            # Если не нашли активный день (все дни отключены), возвращаем текущее время
-            logger.warning("Не найден активный день недели, используется текущая дата")
-            return datetime.combine(now.date(), t)
-
-        except ValueError as e:
-            logger.error(f"Неверный формат времени '{time_str}': {e}")
-            # Дефолтное время - через 2 часа
-            return datetime.now() + timedelta(hours=2)
+    def parse_shutdown_time(self, time_str, active_days=None):
+        """Ближайшее будущее выключение по базовому расписанию, без продления."""
+        active_days = self.active_days if active_days is None else active_days
+        clock_time = datetime.strptime(time_str, '%H:%M').time()
+        now = datetime.now()
+        shutdown_dt = datetime.combine(now.date(), clock_time)
+        if shutdown_dt < now:
+            shutdown_dt += timedelta(days=1)
+        for _ in range(7):
+            if shutdown_dt.isoweekday() in active_days:
+                return shutdown_dt
+            shutdown_dt += timedelta(days=1)
+        raise ValueError('Не найден активный день недели')
 
     def build_menu(self):
         """Построение меню трея"""
@@ -349,57 +359,25 @@ class PoweroffDaemon:
             return True
 
         now = datetime.now()
-        current_weekday = now.isoweekday()  # 1=Monday, 7=Sunday
-
-        # Проверяем активен ли сегодняшний день
-        if current_weekday not in self.active_days:
-            # Сегодня не рабочий день, пересчитываем время на следующий активный день
-            logger.info(f"Сегодня день {current_weekday} не активен, пересчитываем время выключения")
-            # Сбрасываем флаг быстрого режима
-            if hasattr(self, '_fast_mode'):
-                delattr(self, '_fast_mode')
-            # Пересчитываем shutdown_time на следующий активный день
-            self.shutdown_time = self.find_next_active_shutdown()
-            self.warned = False
-
-            # Показываем в трее что сегодня выключение не планируется
-            self.indicator.set_label("", "")
-            next_day_name = self.get_weekday_name(self.shutdown_time.isoweekday())
-            shutdown_str = self.shutdown_time.strftime('%H:%M')
-            tooltip = f"Сегодня неактивный день. След. выключение: {next_day_name} в {shutdown_str}"
-            self.indicator.set_title(tooltip)
-            if self.time_item:
-                self.time_item.set_label(f"След. выключение: {next_day_name} в {shutdown_str}")
-            self.update_icon(warning=False)  # Обычная иконка
-            self.update_menu_state()
-            return True
-
         time_left = (self.shutdown_time - now).total_seconds()
 
-        # Проверка на выключение
         if time_left <= 0:
-            logger.info("Время выключения наступило")
-            # Показываем финальное уведомление
-            self.show_shutdown_notification()
-            # Выполняем выключение
-            self.perform_shutdown()
-            return False
+            if self.shutdown_timer_id is None:
+                self.start_shutdown_countdown()
+            self.indicator.set_label("", "")
+            seconds = max(0, int((self.countdown_end - now).total_seconds() + 0.999))
+            title = f"Выключение через {seconds} секунд. Можно продлить время."
+            self.indicator.set_title(title)
+            self.time_item.set_label(title)
+            self.update_icon(warning=True)
+            self.update_menu_state()
+            return True
 
         # Проверка на предупреждение
         warn_seconds = self.warn_minutes * 60
         if time_left <= warn_seconds and not self.warned:
             self.show_warning_notification(int(time_left / 60))
             self.warned = True
-
-        # Переключаемся на обновление каждую секунду в последнюю минуту
-        if time_left <= 60 and not hasattr(self, '_fast_mode'):
-            logger.info("Переключение на быстрое обновление (каждую секунду)")
-            self._fast_mode = True
-            # Удаляем старый таймер (минутный)
-            if hasattr(self, 'update_timer_id') and self.update_timer_id:
-                GLib.source_remove(self.update_timer_id)
-            # Создаём новый таймер (секундный)
-            self.update_timer_id = GLib.timeout_add_seconds(1, self.update_indicator)
 
         # Вычисляем время для отображения
         minutes_left = int(time_left / 60)
@@ -420,6 +398,8 @@ class PoweroffDaemon:
 
         # Устанавливаем tooltip с информацией о времени
         shutdown_str = self.shutdown_time.strftime('%H:%M')
+        if self.shutdown_time.date() != now.date():
+            shutdown_str = self.shutdown_time.strftime('%d.%m %H:%M')
         if minutes_left > 0:
             tooltip = f"Выключение в {shutdown_str} (осталось {time_display})"
         else:
@@ -444,6 +424,7 @@ class PoweroffDaemon:
         if hasattr(self, 'extend_item'):
             # Продлить время доступно только если выключение включено
             self.extend_item.set_sensitive(self.shutdown_time is not None)
+            self.extend_item.set_label(f"Продлить на {self.extend_minutes} мин")
 
         return True
 
@@ -454,7 +435,10 @@ class PoweroffDaemon:
             return
 
         if self.shutdown_time:
-            self.shutdown_time += timedelta(minutes=self.extend_minutes)
+            new_shutdown = self.shutdown_time + timedelta(minutes=self.extend_minutes)
+            self.close_warning_notification()
+            self.cancel_pending_shutdown()
+            self.shutdown_time = new_shutdown
             self.warned = False  # Сбрасываем флаг предупреждения
             logger.info(f"Время продлено на {self.extend_minutes} мин. "
                        f"Новое время: {self.shutdown_time.strftime('%H:%M')}")
@@ -471,6 +455,7 @@ class PoweroffDaemon:
     def show_warning_notification(self, minutes_left):
         """Показ предупреждения о скором выключении"""
         logger.info(f"Показ предупреждения: осталось {minutes_left} мин")
+        self.close_warning_notification()
 
         notification = Notify.Notification.new(
             "Скоро выключение ПК",
@@ -484,9 +469,34 @@ class PoweroffDaemon:
         if self.interactive:
             notification.add_action("extend", f"Продлить на {self.extend_minutes} мин",
                                    self.notification_extend_callback)
-            notification.add_action("ok", "ОК", lambda n, a: None)
+            notification.add_action("ok", "ОК", self.notification_ok_callback)
 
-        notification.show()
+        # LibNotify disconnects DBus signals when this object is destroyed.
+        # Keep it alive after this method returns, until closed or superseded.
+        self.warning_notification = notification
+        notification.connect('closed', self.warning_notification_closed)
+        try:
+            notification.show()
+        except Exception:
+            self.close_warning_notification()
+            raise
+
+    def warning_notification_closed(self, notification):
+        if getattr(self, 'warning_notification', None) is notification:
+            self.warning_notification = None
+
+    def close_warning_notification(self):
+        notification = getattr(self, 'warning_notification', None)
+        self.warning_notification = None
+        if notification is not None:
+            try:
+                notification.close()
+            except Exception:
+                logger.exception('Не удалось закрыть предупреждение')
+
+    def notification_ok_callback(self, notification, action, user_data=None):
+        if getattr(self, 'warning_notification', None) is notification:
+            self.close_warning_notification()
 
     def show_shutdown_notification(self):
         """Показ уведомления о начале выключения (когда время пришло)"""
@@ -499,20 +509,71 @@ class PoweroffDaemon:
         )
         notification.set_urgency(Notify.Urgency.CRITICAL)
         notification.set_timeout(15000)  # 15 секунд
+        self.final_notification = notification
         notification.show()
 
-        # Даём время показать уведомление перед выключением
-        import time
-        time.sleep(15)
+    def cancel_pending_shutdown(self):
+        """Отменяет финальный таймер при продлении или смене расписания."""
+        if getattr(self, 'shutdown_timer_id', None) is not None:
+            GLib.source_remove(self.shutdown_timer_id)
+        self.shutdown_timer_id = None
+        self.pending_shutdown = None
+        if getattr(self, 'final_notification', None) is not None:
+            try:
+                self.final_notification.close()
+            except Exception:
+                logger.exception('Не удалось закрыть финальное уведомление')
+            self.final_notification = None
 
-    def notification_extend_callback(self, notification, action):
+    def start_shutdown_countdown(self):
+        self.close_warning_notification()
+        deadline = self.shutdown_time
+        self.pending_shutdown = deadline
+        self.countdown_end = datetime.now() + timedelta(seconds=15)
+        self.shutdown_timer_id = GLib.timeout_add_seconds(
+            15, self.finish_shutdown_countdown, deadline)
+        try:
+            self.show_shutdown_notification()
+        except Exception:
+            logger.exception('Не удалось показать финальное уведомление')
+
+    def finish_shutdown_countdown(self, deadline):
+        # Защита от устаревшего callback и изменения срока во время ожидания.
+        if self.pending_shutdown != deadline:
+            return False
+        self.shutdown_timer_id = None
+        self.pending_shutdown = None
+        if self.shutdown_time != deadline or datetime.now() < deadline:
+            self.cancel_pending_shutdown()
+            return False
+        succeeded = self.perform_shutdown()
+        # Не повторяем неудачную попытку каждую секунду. Следующий цикл берёт
+        # базовое расписание, поэтому сегодняшнее продление на него не переносится.
+        self.shutdown_time = self.parse_shutdown_time(self.config['shutdown_time'])
+        self.warned = False
+        self.cancel_pending_shutdown()
+        if not succeeded:
+            self.show_error_notification(
+                'Не удалось выключить ПК',
+                f'Проверьте права и журнал. Следующая попытка по расписанию: '
+                f'{self.shutdown_time:%d.%m %H:%M}')
+        self.update_indicator()
+        return False
+
+    def notification_extend_callback(self, notification, action, user_data=None):
         """Callback для кнопки 'Продлить' в уведомлении"""
+        if getattr(self, 'warning_notification', None) is not notification:
+            return
+        logger.info('Нажата кнопка продления в уведомлении')
         self.extend_time(None)
 
     def show_error_notification(self, title, message):
         """Показ уведомления об ошибке"""
-        notification = Notify.Notification.new(title, message, "dialog-error")
-        notification.show()
+        try:
+            notification = Notify.Notification.new(title, message, "dialog-error")
+            notification.show()
+        except Exception:
+            logger.exception('Не удалось показать сообщение об ошибке: %s', message)
 
     def perform_shutdown(self):
         """Выполнение выключения ПК через systemd-logind"""
@@ -526,21 +587,25 @@ class PoweroffDaemon:
                                              'org.freedesktop.login1.Manager')
             # PowerOff(interactive: bool)
             login1_interface.PowerOff(self.interactive)
+            return True
         except Exception as e:
             logger.error(f"Ошибка выключения через DBus: {e}")
             # Fallback на systemctl
             import subprocess
             try:
                 subprocess.run(['systemctl', 'poweroff'], check=True)
-            except subprocess.CalledProcessError as e2:
+                return True
+            except (subprocess.CalledProcessError, OSError) as e2:
                 logger.error(f"Ошибка systemctl poweroff: {e2}")
+                return False
 
     def manual_reload_config(self, widget):
         """Ручная перезагрузка конфига (через меню)"""
         logger.info("Ручная перезагрузка конфигурации")
         old_reload_minutes = self.reload_minutes
 
-        self.load_config()
+        if not self.load_config():
+            return False
         self.update_indicator()
 
         # Если интервал изменился, пересоздаём таймер автоперезагрузки
@@ -565,7 +630,8 @@ class PoweroffDaemon:
         logger.info("Перезагрузка конфигурации по таймеру")
         old_reload_minutes = self.reload_minutes
 
-        self.load_config()
+        if not self.load_config():
+            return True
         self.update_indicator()
 
         # Если интервал изменился, пересоздаём таймер

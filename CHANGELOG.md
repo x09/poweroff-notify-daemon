@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.2] - 2026-11-11
+
+### Fixed
+- Keep notification objects alive until closed so button actions reach the daemon.
+- Accept LibNotify user_data in notification action callbacks.
+- Preserve shutdown extensions when reloading unchanged effective schedules.
+- Validate configuration before applying it; retain previous settings on errors.
+- Support inline configuration comments and reject invalid time, day and interval values.
+- Replace the blocking final delay with a cancellable 15-second GLib timer.
+- Cancel pending shutdown on extension or schedule changes and report shutdown failures.
+
+### Tests
+- Add regression tests for notification actions, configuration reload and shutdown scheduling.
+- Add a real LibNotify/DBus integration test using an isolated notification server.
+
+The independent fallback systemd timer is unchanged.
+
 ## [1.0.0] - 2026-10-08
 
 ### Added
