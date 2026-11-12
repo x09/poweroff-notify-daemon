@@ -204,13 +204,10 @@ class PoweroffDaemon:
             }
             settings.update(self.validate_config_values('effective', merged_config))
             old_config = self.config
-            schedule_changed = not old_config or any(
-                settings[key] != old_config[key] for key in ('shutdown_time', 'days'))
-            # Вычисляем новое расписание до применения любых параметров.
-            new_shutdown = self.shutdown_time
-            if schedule_changed:
-                new_shutdown = (None if settings['shutdown_time'] == 'none' else
-                                self.parse_shutdown_time(settings['shutdown_time'], settings['days']))
+            old_shutdown = self.shutdown_time
+            # Как в 1.0.1: каждое успешное чтение заново назначает базовый срок.
+            new_shutdown = (None if settings['shutdown_time'] == 'none' else
+                            self.parse_shutdown_time(settings['shutdown_time'], settings['days']))
 
             self.config = settings
             self.extend_minutes = settings['extend_minutes']
@@ -218,22 +215,19 @@ class PoweroffDaemon:
             self.reload_minutes = settings['reload_minutes']
             self.interactive = settings['interactive']
             self.active_days = settings['days']
-            if schedule_changed:
-                self.close_warning_notification()
-                self.cancel_pending_shutdown()
-                self.shutdown_time = new_shutdown
-                self.warned = False
-                if old_config:
-                    message = ('Автоматическое выключение отключено' if new_shutdown is None else
-                               f"Новое выключение: {new_shutdown:%d.%m %H:%M}. "
-                               "Прежнее продление отменено.")
-                    try:
-                        Notify.Notification.new('Расписание изменено', message,
-                                                'dialog-information').show()
-                    except Exception:
-                        logger.exception('Не удалось показать изменение расписания')
-            elif old_config.get('warn_minutes') != self.warn_minutes:
-                self.warned = False
+            self.close_warning_notification()
+            self.cancel_pending_shutdown()
+            self.shutdown_time = new_shutdown
+            self.warned = False
+            if old_config and old_shutdown != new_shutdown:
+                message = ('Автоматическое выключение отключено' if new_shutdown is None else
+                           f"Новое выключение: {new_shutdown:%d.%m %H:%M}. "
+                           "Прежнее продление отменено.")
+                try:
+                    Notify.Notification.new('Расписание изменено', message,
+                                            'dialog-information').show()
+                except Exception:
+                    logger.exception('Не удалось показать изменение расписания')
 
             logger.info(f"Конфигурация загружена: shutdown_time={self.shutdown_time}, "
                        f"extend={self.extend_minutes}m, warn={self.warn_minutes}m, "
@@ -397,11 +391,11 @@ class PoweroffDaemon:
         self.indicator.set_label("", "")
 
         # Устанавливаем tooltip с информацией о времени
-        shutdown_str = self.shutdown_time.strftime('%H:%M')
+        shutdown_str = self.shutdown_time.strftime('в %H:%M')
         if self.shutdown_time.date() != now.date():
-            shutdown_str = self.shutdown_time.strftime('%d.%m %H:%M')
+            shutdown_str = self.shutdown_time.strftime('%d.%m в %H:%M')
         if minutes_left > 0:
-            tooltip = f"Выключение в {shutdown_str} (осталось {time_display})"
+            tooltip = f"Выключение {shutdown_str} (осталось {time_display})"
         else:
             tooltip = f"Выключение через {seconds_left} секунд"
         self.indicator.set_title(tooltip)
@@ -504,7 +498,7 @@ class PoweroffDaemon:
 
         notification = Notify.Notification.new(
             "Выключение ПК",
-            "Компьютер выключается через 15 секунд...",
+            "Компьютер выключится через 15 секунд...",
             "system-shutdown"
         )
         notification.set_urgency(Notify.Urgency.CRITICAL)

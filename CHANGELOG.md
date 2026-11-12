@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.2-alt2] - 2026-11-12
+
+### Fixed
+- Reset extensions and recalculate the base deadline on every successful manual
+  or periodic configuration reload, matching 1.0.1 behaviour.
+- After the base time has passed, schedule the next active day; keep the existing
+  deadline if the configuration is invalid.
+- Use the notification wording "Выключение DD.MM в HH:MM" and
+  "Компьютер выключится через 15 секунд...".
+- Update regression tests and documentation for the restored reload behaviour.
+
 ## [1.0.2] - 2026-11-11
 
 ### Fixed

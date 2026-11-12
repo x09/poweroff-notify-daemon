@@ -1,6 +1,6 @@
 Name: poweroff-notify-daemon
 Version: 1.0.2
-Release: alt1
+Release: alt2
 
 Summary: Daemon for scheduled PC shutdown with GUI notifications
 Summary(ru_RU.UTF-8): Демон запланированного выключения ПК с GUI-уведомлениями
@@ -152,6 +152,10 @@ fi
 %_pixmapsdir/poweroff-daemon.png
 
 %changelog
+* Thu Nov 12 2026 Anton Shevtsov <shevtsov.anton@gmail.com> 1.0.2-alt2
+- Restore 1.0.1 deadline recalculation on manual and periodic config reload
+- Correct date/time wording and the final shutdown notification
+
 * Wed Nov 11 2026 Anton Shevtsov <shevtsov.anton@gmail.com> 1.0.2-alt1
 - Fix notification action callbacks to accept user_data
 - Keep warning notifications alive until closed so DBus actions are delivered

@@ -53,22 +53,32 @@ class ScheduleTest(unittest.TestCase):
     def load(self):
         self.assertTrue(self.daemon.load_config())
 
-    def test_unchanged_reload_keeps_extension_even_after_base_deadline(self):
-        self.load()
-        self.daemon.extend_time(None)
-        Clock.current = datetime(2026, 11, 11, 18, 5)
-        self.assertTrue(self.daemon.reload_config_timer())
-        self.assertEqual(self.daemon.shutdown_time, datetime(2026, 11, 11, 18, 30))
-        self.daemon.manual_reload_config(None)
-        self.assertEqual(self.daemon.shutdown_time, datetime(2026, 11, 11, 18, 30))
+    def test_reload_resets_extension_before_and_after_base_time(self):
+        for method in ('manual_reload_config', 'reload_config_timer'):
+            for now, expected in (
+                (datetime(2026, 11, 11, 17, 55), datetime(2026, 11, 11, 18, 0)),
+                (datetime(2026, 11, 11, 18, 25), datetime(2026, 11, 12, 18, 0)),
+                (datetime(2026, 11, 13, 18, 25), datetime(2026, 11, 16, 18, 0)),
+            ):
+                with self.subTest(method=method, now=now):
+                    Clock.current = now.replace(hour=17, minute=0)
+                    self.load()
+                    self.daemon.extend_time(None)
+                    self.assertEqual(self.daemon.shutdown_time, now.replace(hour=18, minute=30))
+                    Clock.current = now
+                    if method == 'manual_reload_config':
+                        self.daemon.manual_reload_config(None)
+                    else:
+                        self.assertTrue(self.daemon.reload_config_timer())
+                    self.assertEqual(self.daemon.shutdown_time, expected)
 
-    def test_non_schedule_parameters_keep_deadline_and_update_menu(self):
+    def test_non_schedule_parameters_reload_resets_deadline_and_updates_menu(self):
         self.load()
         self.daemon.extend_time(None)
         self.write_config('shutdown_time=18:00\ndays=5,4,3,2,1,1\nextend_minutes=45\nwarn_minutes=0\nreload_minutes=2\ninteractive=no')
         self.load()
         self.daemon.update_indicator()
-        self.assertEqual(self.daemon.shutdown_time, datetime(2026, 11, 11, 18, 30))
+        self.assertEqual(self.daemon.shutdown_time, datetime(2026, 11, 11, 18, 0))
         self.assertEqual(self.daemon.reload_minutes, 2)
         self.assertFalse(self.daemon.interactive)
         self.daemon.extend_item.set_label.assert_called_with('Продлить на 45 мин')
@@ -79,7 +89,7 @@ class ScheduleTest(unittest.TestCase):
         self.daemon.extend_time(None)
         self.write_config('shutdown_time=20:00\ndays=1,2,3,4,5', '[user:alice]\nshutdown_time=19:00')
         self.load()
-        self.assertEqual(self.daemon.shutdown_time, datetime(2026, 11, 11, 19, 30))
+        self.assertEqual(self.daemon.shutdown_time, datetime(2026, 11, 11, 19, 0))
 
     def test_schedule_change_resets_extension_and_notifies(self):
         self.load()
@@ -130,10 +140,9 @@ class ScheduleTest(unittest.TestCase):
         self.daemon.perform_shutdown.assert_not_called()
         return self.glib.timeout_add_seconds.call_args.args[1:]
 
-    def test_countdown_is_single_and_reload_does_not_cancel_it(self):
+    def test_countdown_is_single_without_reload(self):
         callback, deadline = self.begin_countdown()
         self.daemon.update_indicator()
-        self.load()
         self.daemon.update_indicator()
         self.glib.timeout_add_seconds.assert_called_once()
         Clock.current += timedelta(seconds=15)
@@ -142,6 +151,14 @@ class ScheduleTest(unittest.TestCase):
         self.assertEqual(self.daemon.shutdown_time, datetime(2026, 11, 12, 18, 0))
         callback(deadline)
         self.daemon.perform_shutdown.assert_called_once_with()
+
+    def test_successful_reload_cancels_final_countdown(self):
+        callback, deadline = self.begin_countdown()
+        self.daemon.manual_reload_config(None)
+        self.assertEqual(self.daemon.shutdown_time, datetime(2026, 11, 12, 18, 0))
+        self.assertIsNone(self.daemon.shutdown_timer_id)
+        callback(deadline)
+        self.daemon.perform_shutdown.assert_not_called()
 
     def test_extension_cancels_countdown_and_stale_callback(self):
         callback, deadline = self.begin_countdown()
@@ -195,7 +212,6 @@ class ScheduleTest(unittest.TestCase):
         self.load()
         self.daemon.extend_time(None)
         Clock.current = datetime(2026, 11, 14, 0, 10)
-        self.load()
         self.daemon.update_indicator()
         self.assertEqual(self.daemon.shutdown_time, datetime(2026, 11, 14, 0, 20))
         Clock.current = datetime(2026, 11, 14, 0, 20, 1)
